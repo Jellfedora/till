@@ -1,0 +1,33 @@
+Till — démo
+Glisse un .txt ici, ou ⌘E pour coller ta propre tab.
+
+[Intro]
+
+e|----------------------|----------------------|
+B|----------------------|----------------------|
+G|----------------------|----------------------|
+D|--------------1/2-0---|-------0--------------|
+A|----0-2---2/3-------2-|----0-2---2-3-2-0-----|
+E|-3------3-------------|-3----------------3---|  / = Slide up
+
+[Verse 1]
+    G                   Em    Em7
+Morning light on the harbour wall
+     C        G/B       Am
+Seagulls singing over it all
+G                     Em    C         G/B      Am
+  Coffee on the table,   a song on the radio
+      G             Em  Em7
+And I hum along so slow
+
+[Chorus]
+          G    C       D        G
+Oh won't you stay, stay a little while
+   C     D       Em    C  D      G       C
+I only need one more,   one more smile
+  D       G      C D
+one more smile
+
+[Bridge]
+Am7         D/F#       C/B     Am6
+  Tomorrow comes  but not tonight
