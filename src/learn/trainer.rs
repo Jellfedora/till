@@ -8,7 +8,7 @@ use eframe::egui::{self, Key, RichText, vec2};
 use super::{Clock, click, crossed, picker_chords, strum};
 use crate::chords::{Chord, voicing};
 use crate::diagram;
-use crate::mic::{Attack, Mic, matches, rms};
+use crate::mic::{Attack, Mic, closest, matches, rms};
 use crate::synth::{Play, Synth};
 use crate::theme::ACCENT;
 
@@ -212,9 +212,12 @@ impl Trainer {
             // Judge the strum once it has settled.
             if self.heard_at.is_some_and(|t| t.elapsed() > Duration::from_millis(250)) {
                 self.heard_at = None;
-                let target = &self.chords[(self.current + 1) % n];
-                let midis = chord_midis(target);
-                if matches(&mic.latest(8192), mic.sr, &midis) {
+                // The current chord often shares notes with the next one: only count the
+                // strum when it sounds more like the next chord than the one being held.
+                let target = chord_midis(&self.chords[(self.current + 1) % n]);
+                let held = chord_midis(&self.chords[self.current % n]);
+                let x = mic.latest(8192);
+                if matches(&x, mic.sr, &target) && closest(&x, mic.sr, &[held, target]) == Some(1) {
                     self.next();
                 }
             }

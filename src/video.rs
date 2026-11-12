@@ -104,6 +104,8 @@ pub struct Player {
     state: Arc<Mutex<State>>,
     pub id: String,
     shown: bool,
+    /// Last place given to the web view.
+    at: (egui::Rect, f32),
 }
 
 const PAGE: &str = r#"<!doctype html><html><head><meta charset="utf-8">
@@ -173,7 +175,35 @@ fn serve(id: &str) -> Result<u16, String> {
     Ok(port)
 }
 
-fn bounds(rect: egui::Rect, zoom: f32) -> wry::Rect {
+/// The window's own cursor covers the web views too and replaces the one the page
+/// sets (the hand over YouTube's buttons): it is turned off while the mouse is over
+/// a player.
+#[cfg(target_os = "macos")]
+pub fn page_cursor(frame: &eframe::Frame, over_player: bool) {
+    use objc2::msg_send;
+    use objc2::runtime::AnyObject;
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    let Ok(handle) = frame.window_handle() else { return };
+    let RawWindowHandle::AppKit(h) = handle.as_raw() else { return };
+    let view = h.ns_view.as_ptr() as *mut AnyObject;
+    unsafe {
+        let window: *mut AnyObject = msg_send![view, window];
+        if window.is_null() {
+            return;
+        }
+        if over_player {
+            let _: () = msg_send![window, disableCursorRects];
+        } else {
+            let _: () = msg_send![window, enableCursorRects];
+            let _: () = msg_send![window, invalidateCursorRectsForView: view];
+        }
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn page_cursor(_frame: &eframe::Frame, _over_player: bool) {}
+
+pub fn bounds(rect: egui::Rect, zoom: f32) -> wry::Rect {
     wry::Rect {
         position: LogicalPosition::new(rect.left() * zoom, rect.top() * zoom).into(),
         size: LogicalSize::new(rect.width() * zoom, rect.height() * zoom).into(),
@@ -181,7 +211,7 @@ fn bounds(rect: egui::Rect, zoom: f32) -> wry::Rect {
 }
 
 impl Player {
-    pub fn new(frame: &eframe::Frame, id: &str, rect: egui::Rect, zoom: f32) -> Result<Player, String> {
+    pub fn new(parent: &impl raw_window_handle::HasWindowHandle, id: &str, rect: egui::Rect, zoom: f32) -> Result<Player, String> {
         let port = serve(id)?;
         let state = Arc::new(Mutex::new(State { rate: 1.0, ..Default::default() }));
         let st = state.clone();
@@ -208,9 +238,9 @@ impl Player {
                 s.rate = v["r"].as_f64().unwrap_or(1.0) as f32;
                 s.error = None;
             })
-            .build_as_child(frame)
+            .build_as_child(parent)
             .map_err(|e| format!("Lecteur vidéo indisponible : {e}"))?;
-        Ok(Player { view, state, id: id.to_string(), shown: true })
+        Ok(Player { view, state, id: id.to_string(), shown: true, at: (rect, zoom) })
     }
 
     fn js(&self, code: &str) {
@@ -218,11 +248,21 @@ impl Player {
     }
 
     pub fn place(&mut self, rect: egui::Rect, zoom: f32) {
-        let _ = self.view.set_bounds(bounds(rect, zoom));
+        // Resizing the web view resets what it shows (a PDF goes back to the top):
+        // only when the place really changed.
+        if self.at != (rect, zoom) {
+            self.at = (rect, zoom);
+            let _ = self.view.set_bounds(bounds(rect, zoom));
+        }
         if !self.shown {
             let _ = self.view.set_visible(true);
             self.shown = true;
         }
+    }
+
+    /// The next `place` must move the web view, even to the same rectangle.
+    pub fn invalidate(&mut self) {
+        self.at = (egui::Rect::NOTHING, 0.0);
     }
 
     pub fn hide(&mut self) {

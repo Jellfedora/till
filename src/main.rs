@@ -1,17 +1,22 @@
 mod chords;
+mod clip;
 mod diagram;
 mod icon;
 mod learn;
+mod metronome;
 mod library;
 mod mic;
 mod playback;
+mod progression;
 mod reader_video;
+mod score;
 mod shelf;
 mod song;
 mod songsterr;
 mod synth;
 mod theme;
 mod tuner;
+mod tutos;
 mod video;
 mod view;
 mod widgets;
@@ -36,6 +41,9 @@ enum Page {
     Chords,
     Tuner,
     Learn,
+    Metronome,
+    /// YouTube guitar lessons.
+    Tutos,
 }
 
 struct TillApp {
@@ -61,6 +69,8 @@ struct TillApp {
     songsterr: songsterr::Importer,
     tuner: tuner::Tuner,
     learn: learn::Learn,
+    metro: metronome::Metronome,
+    tutos: tutos::Tutos,
     /// Playback speed factor (1 = written tempo).
     speed: f32,
     easy_chords: bool,
@@ -90,6 +100,8 @@ struct TillApp {
     /// The beat moved: the video must seek to it.
     video_resync: bool,
     video_fetch: Option<reader_video::Fetch>,
+    /// The mouse is over a video player: the page sets the cursor.
+    video_hover: bool,
     last_frame: Option<std::time::Instant>,
     synth: Option<synth::Synth>,
     sound: bool,
@@ -134,6 +146,8 @@ impl TillApp {
             songsterr: Default::default(),
             tuner: Default::default(),
             learn: learn::Learn::load(&get),
+            metro: metronome::Metronome::load(&get),
+            tutos: tutos::Tutos::load(&get),
             speed: get("speed").and_then(|t| t.parse().ok()).unwrap_or(1.0),
             easy_chords: get("easy_chords").is_some_and(|v| v == "true"),
             capo: 0,
@@ -155,6 +169,7 @@ impl TillApp {
             video_cmd_at: None,
             video_resync: false,
             video_fetch: None,
+            video_hover: false,
             last_frame: None,
             shelf: shelf::Shelf::new(get("library_dir").map_or_else(shelf::default_dir, PathBuf::from)),
             synth: synth::Synth::new(),
@@ -173,6 +188,9 @@ impl TillApp {
         app.shelf.favorites = get("fav_tabs").map(|f| f.lines().filter(|l| !l.is_empty()).map(String::from).collect()).unwrap_or_default();
         app.tuner.tuning = get("tuning").and_then(|t| t.parse().ok()).filter(|&t| t < tuner::TUNINGS.len()).unwrap_or(0);
         app.tuner.a4 = get("a4").and_then(|t| t.parse().ok()).unwrap_or(440.0);
+        if let Some(p) = get("progressions") {
+            app.library.progressions = progression::Progression::load_all(&p);
+        }
         app.library.favorites = get("fav_chords").map(|f| f.lines().filter(|l| !l.is_empty()).map(String::from).collect()).unwrap_or_default();
         // The file may have changed since last time (re-import, sync fix): it wins.
         if let Some(text) = app.path.as_ref().and_then(|p| std::fs::read(p).ok()) {
@@ -332,6 +350,14 @@ impl TillApp {
             self.stop();
             self.page = Page::Learn;
         }
+        if cmd(Key::Num5) {
+            self.stop();
+            self.page = Page::Tutos;
+        }
+        if cmd(Key::Num6) {
+            self.stop();
+            self.page = Page::Metronome;
+        }
         if cmd(Key::Num3) {
             self.stop();
             self.page = Page::Tuner;
@@ -361,6 +387,9 @@ impl TillApp {
         if key(Key::Escape) {
             self.stop();
         }
+        if key(Key::R) {
+            self.restart();
+        }
         if key(Key::ArrowLeft) {
             self.bpm = (self.bpm - 5.0).max(20.0);
         }
@@ -385,9 +414,23 @@ impl TillApp {
             self.stop();
             self.page = Page::Learn;
         }
+        let n = self.tutos.list.len();
+        let badge = (n > 0).then(|| n.to_string());
+        if nav_item(ui, Icon::Video, "Tutos vidéos", self.page == Page::Tutos, badge, 38.0).on_hover_text("Cmd+5").clicked() {
+            self.stop();
+            self.page = Page::Tutos;
+        }
         if nav_item(ui, Icon::Tuner, "Accordeur", self.page == Page::Tuner, None, 38.0).on_hover_text("Cmd+3").clicked() {
             self.stop();
             self.page = Page::Tuner;
+        }
+        let on = self.metro.running();
+        if nav_item(ui, Icon::Metronome, "Métronome", self.page == Page::Metronome, on.then(|| "♪".to_string()), 38.0)
+            .on_hover_text("Cmd+6")
+            .clicked()
+        {
+            self.stop();
+            self.page = Page::Metronome;
         }
 
         let favs: Vec<(PathBuf, String)> = self.shelf.favorite_entries().map(|e| (e.path.clone(), e.title.clone())).collect();
@@ -491,6 +534,13 @@ impl TillApp {
         self.beat = 0.0;
         self.video_resync = true;
         self.damp();
+    }
+
+    /// Back to the start, then always counts in before playing.
+    fn restart(&mut self) {
+        self.stop();
+        self.counting = Some(std::time::Instant::now());
+        self.count_ticks = 0;
     }
 
     fn damp(&self) {
@@ -706,6 +756,9 @@ impl TillApp {
             }
             if widgets::icon_button(ui, Icon::Stop, false).on_hover_text("Revenir au début (Échap)").clicked() {
                 self.stop();
+            }
+            if widgets::icon_button(ui, Icon::Restart, false).on_hover_text("Recommencer au début avec le décompte (R)").clicked() {
+                self.restart();
             }
 
             // Beat indicator: one dot per beat of the bar, the current one lit.
@@ -1021,7 +1074,14 @@ impl eframe::App for TillApp {
     fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
         self.video_rect = None;
         self.ui(ctx);
+        let pos = ctx.input(|i| i.pointer.latest_pos());
+        let hover = pos.is_some_and(|p| self.video_rect.into_iter().chain(self.tutos.web_rects()).any(|r| r.contains(p)));
+        if hover != self.video_hover {
+            self.video_hover = hover;
+            video::page_cursor(frame, hover);
+        }
         self.place_video(ctx, frame);
+        self.tutos.place(ctx, frame);
     }
 
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
@@ -1033,7 +1093,12 @@ impl TillApp {
     fn ui(&mut self, ctx: &egui::Context) {
         for f in ctx.input(|i| i.raw.dropped_files.clone()) {
             if let Some(p) = f.path {
-                self.import(p);
+                // A PDF dropped on a video tutorial is its score.
+                if self.page == Page::Tutos && p.extension().is_some_and(|e| e.eq_ignore_ascii_case("pdf")) {
+                    self.tutos.attach_pdf(&p, &self.shelf.dir.join("Partitions"));
+                } else {
+                    self.import(p);
+                }
             }
         }
         self.shortcuts(ctx);
@@ -1044,6 +1109,8 @@ impl TillApp {
             Page::Chords => "Accords — Till".to_string(),
             Page::Tuner => "Accordeur — Till".to_string(),
             Page::Learn => "Apprendre — Till".to_string(),
+            Page::Metronome => "Métronome — Till".to_string(),
+            Page::Tutos => "Tutos vidéos — Till".to_string(),
         };
         ctx.send_viewport_cmd(egui::ViewportCommand::Title(title));
 
@@ -1098,6 +1165,11 @@ impl TillApp {
                         self.learn.open_check(&name);
                         self.page = Page::Learn;
                     }
+                    Some(library::Action::OpenTab(text)) => self.open_text(&text),
+                    Some(library::Action::SaveTab(name, text)) => match self.shelf.add(&name, &text) {
+                        Ok(path) => self.load(path),
+                        Err(e) => self.error = Some(format!("Enregistrement impossible : {e}")),
+                    },
                     None => {}
                 }
             }
@@ -1124,6 +1196,16 @@ impl TillApp {
                     None => {}
                 }
             }
+            Page::Metronome => {
+                let favorites = self.library.favorites.clone();
+                egui::CentralPanel::default()
+                    .frame(egui::Frame::new().fill(v.panel_fill))
+                    .show(ctx, |ui| self.metro.show(ui, self.synth.as_ref(), &favorites));
+            }
+            Page::Tutos => {
+                let favorites = self.library.favorites.clone();
+                self.tutos.show(ctx, &self.shelf.dir.join("Partitions"), &favorites);
+            }
         }
         // The microphone stays open only while a page that listens is on screen.
         if self.page != Page::Tuner {
@@ -1131,6 +1213,9 @@ impl TillApp {
         }
         if self.page != Page::Learn {
             self.learn.leave();
+        }
+        if self.page != Page::Metronome {
+            self.metro.stop(self.synth.as_ref());
         }
         if self.page != Page::Reader {
             self.reader_mic = None;
@@ -1140,7 +1225,7 @@ impl TillApp {
         let now = std::time::Instant::now();
         if let Some(t) = self.last_frame {
             let dt = now.duration_since(t).as_secs_f32();
-            if dt < 1.0 && (self.playing || self.learn.practicing()) {
+            if dt < 1.0 && (self.playing || self.learn.practicing() || self.metro.running()) {
                 self.learn.journal.add(dt);
             }
         }
@@ -1156,6 +1241,18 @@ impl TillApp {
         });
         if let Some(url) = pasted.filter(|_| !ctx.wants_keyboard_input()) {
             self.songsterr.show_with(url);
+        }
+        // Same for a YouTube link: it goes to the video tutorials.
+        let youtube = ctx.input(|i| {
+            i.events.iter().find_map(|e| match e {
+                egui::Event::Paste(t) if t.contains("youtu") && tutos::parse_id(t).is_some() => Some(t.clone()),
+                _ => None,
+            })
+        });
+        if let Some(url) = youtube.filter(|_| !ctx.wants_keyboard_input()) {
+            self.stop();
+            self.tutos.add(&url);
+            self.page = Page::Tutos;
         }
         if let Some((name, text)) = self.songsterr.show(ctx) {
             match self.shelf.add(&name, &text) {
@@ -1181,11 +1278,18 @@ impl TillApp {
         storage.set_string("beats_per_chord", self.beats_per_chord.to_string());
         storage.set_string("fav_tabs", self.shelf.favorites.iter().cloned().collect::<Vec<_>>().join("\n"));
         storage.set_string("fav_chords", self.library.favorites.join("\n"));
+        storage.set_string("progressions", progression::Progression::save_all(&self.library.progressions));
         storage.set_string("tuning", self.tuner.tuning.to_string());
         storage.set_string("speed", self.speed.to_string());
         storage.set_string("easy_chords", self.easy_chords.to_string());
         storage.set_string("count_in", self.count_in.to_string());
         storage.set_string("video_on", self.video_on.to_string());
+        for (k, v) in self.tutos.save() {
+            storage.set_string(k, v);
+        }
+        for (k, v) in self.metro.save() {
+            storage.set_string(k, v);
+        }
         for (k, v) in self.learn.save() {
             storage.set_string(k, v);
         }
@@ -1241,6 +1345,7 @@ mod screenshots {
                 app.page = match page.as_str() {
                     "shelf" => Page::Shelf,
                     "chords" => Page::Chords,
+                    "tutos" => Page::Tutos,
                     _ => Page::Reader,
                 };
                 app

@@ -236,6 +236,23 @@ pub fn matches(x: &[f32], sr: f32, midis: &[u8]) -> bool {
     present * 3 >= pcs.len() * 2
 }
 
+/// Which of these chords (as MIDI notes) sounds closest to what was heard: cosine
+/// similarity between the heard chroma and each chord's pitch classes.
+pub fn closest(x: &[f32], sr: f32, chords: &[Vec<u8>]) -> Option<usize> {
+    if rms(x) < 0.005 {
+        return None;
+    }
+    let chroma = Spectrum::new(x, sr).chroma();
+    let norm = chroma.iter().map(|v| v * v).sum::<f32>().sqrt().max(1e-9);
+    let score = |midis: &Vec<u8>| {
+        let mut on = [false; 12];
+        midis.iter().for_each(|m| on[(m % 12) as usize] = true);
+        let n = on.iter().filter(|b| **b).count().max(1) as f32;
+        (0..12).filter(|&pc| on[pc]).map(|pc| chroma[pc]).sum::<f32>() / (norm * n.sqrt())
+    };
+    (0..chords.len()).max_by(|&a, &b| score(&chords[a]).total_cmp(&score(&chords[b])))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -279,4 +296,26 @@ mod tests {
         assert!(matches(&e, sr, &[52]));
         assert!(!matches(&e, sr, &[53]));
     }
+
+    #[test]
+    fn tells_close_chords_apart() {
+        let sr = 48_000.0;
+        let mix = |midis: &[u8]| {
+            let mut out = vec![0.0f32; 8192];
+            for &m in midis {
+                for (o, v) in out.iter_mut().zip(string(m, sr, 8192)) {
+                    *o += v * 0.2;
+                }
+            }
+            out
+        };
+        let names = ["Em", "Am", "C", "G", "D", "E", "A", "Dm"];
+        for a in names {
+            for b in names.into_iter().filter(|b| *b != a) {
+                let (ma, mb) = (crate::learn::trainer::chord_midis(a), crate::learn::trainer::chord_midis(b));
+                assert_eq!(closest(&mix(&ma), sr, &[ma.clone(), mb]), Some(0), "{a} heard as {b}");
+            }
+        }
+    }
 }
+

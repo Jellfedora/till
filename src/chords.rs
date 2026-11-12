@@ -184,6 +184,12 @@ impl Chord {
 
     /// Lenient parsing for search: English ("am7", "F#") or French ("Sol m7", "Lam", "Ré#").
     pub fn parse_loose(s: &str) -> Option<Chord> {
+        // Slash chord, in either language: `C/B`, `Do/Si`, `Lam/Sol`.
+        if let Some((main, bass)) = s.split_once('/') {
+            let c = Self::parse_loose(main)?;
+            let b = Self::parse_loose(bass).filter(|b| b.quality.is_empty() && b.suffix.is_empty() && b.bass.is_none())?;
+            return Some(Chord { bass: Some((b.root, b.spell)), ..c });
+        }
         let s: String = s.split_whitespace().collect();
         let s = s.replace("mineur", "m").replace("majeur", "").replace("maj7e", "maj7");
         let lower = s.to_lowercase();
@@ -266,6 +272,16 @@ impl Chord {
         if let Some((pc, sp)) = self.bass {
             s.push('/');
             s.push_str(note_name(pc, sp));
+        }
+        s
+    }
+
+    /// Short French name: `Lam7`, `Do/Si`.
+    pub fn short_fr(&self) -> String {
+        let mut s = format!("{}{}", note_name_fr(self.root, self.spell), self.suffix);
+        if let Some((pc, sp)) = self.bass {
+            s.push('/');
+            s.push_str(note_name_fr(pc, sp));
         }
         s
     }
@@ -438,6 +454,11 @@ fn with_bass(frets: [Option<u8>; 6], bass: u8) -> [Option<u8>; 6] {
         }
     }
     frets
+}
+
+/// The slash chords with a known open shape (`C/B`, `G/B`, `D/F#`…).
+pub fn slash_chords() -> Vec<Chord> {
+    open_table().iter().filter(|(c, _)| c.bass.is_some()).map(|(c, _)| c.clone()).collect()
 }
 
 pub fn voicing(chord: &Chord) -> Option<Voicing> {

@@ -13,11 +13,14 @@ pub enum Icon {
     Play,
     Pause,
     Stop,
+    Restart,
     Back,
     Star,
     Tuner,
     Learn,
     Trash,
+    Video,
+    Metronome,
 }
 
 /// Five-pointed star, filled when `on`.
@@ -106,6 +109,19 @@ pub fn paint_icon(p: &Painter, icon: Icon, c: Pos2, color: Color32) {
         Icon::Stop => {
             p.rect_filled(Rect::from_center_size(c, vec2(9.5, 9.5)), CornerRadius::same(2), color);
         }
+        Icon::Restart => {
+            // Counter-clockwise arrow: a circle open at the top, head pointing left.
+            let arc: Vec<Pos2> = (0..=16)
+                .map(|k| {
+                    let a = (100.0 - k as f32 * 290.0 / 16.0).to_radians();
+                    pos2(c.x + 6.0 * a.cos(), c.y - 6.0 * a.sin())
+                })
+                .collect();
+            let tip = arc[0];
+            p.add(egui::Shape::line(arc, s));
+            let head = vec![pos2(tip.x - 3.5, tip.y), pos2(tip.x + 1.5, tip.y - 3.5), pos2(tip.x + 1.5, tip.y + 3.5)];
+            p.add(egui::Shape::convex_polygon(head, color, Stroke::NONE));
+        }
         Icon::Back => {
             p.line_segment([pos2(c.x + 3.0, c.y - 6.0), pos2(c.x - 3.0, c.y)], s);
             p.line_segment([pos2(c.x - 3.0, c.y), pos2(c.x + 3.0, c.y + 6.0)], s);
@@ -140,6 +156,18 @@ pub fn paint_icon(p: &Painter, icon: Icon, c: Pos2, color: Color32) {
             p.add(egui::Shape::line(arc, s));
             p.line_segment([base, pos2(c.x + 3.5, c.y - 2.5)], Stroke::new(1.6_f32, color));
             p.circle_filled(base, 1.8, color);
+        }
+        Icon::Video => {
+            // Screen with a play triangle.
+            p.rect_stroke(Rect::from_center_size(c, vec2(17.0, 12.0)), CornerRadius::same(3), s, egui::StrokeKind::Middle);
+            let pts = vec![pos2(c.x - 2.0, c.y - 3.2), pos2(c.x + 3.2, c.y), pos2(c.x - 2.0, c.y + 3.2)];
+            p.add(egui::Shape::convex_polygon(pts, color, Stroke::NONE));
+        }
+        Icon::Metronome => {
+            // Pyramid body with a slanted pendulum.
+            let body = vec![pos2(c.x - 3.0, c.y - 8.0), pos2(c.x + 3.0, c.y - 8.0), pos2(c.x + 7.0, c.y + 7.0), pos2(c.x - 7.0, c.y + 7.0)];
+            p.add(egui::Shape::closed_line(body, s));
+            p.line_segment([pos2(c.x, c.y + 4.0), pos2(c.x + 6.0, c.y - 6.0)], Stroke::new(1.6_f32, color));
         }
         Icon::Plus => {
             p.line_segment([pos2(c.x - 6.0, c.y), pos2(c.x + 6.0, c.y)], s);

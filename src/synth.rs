@@ -1,5 +1,7 @@
 //! Plucked-string synthesizer (Karplus-Strong) and metronome, played through cpal.
 
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
@@ -10,13 +12,29 @@ pub enum Event {
     /// Pick noise brushing across the strings during a strum.
     Scratch { sweep_ms: f32, gain: f32 },
     Click { accent: bool },
+    /// Starts (or retunes, keeping the beat going) the metronome, or stops it with `None`.
+    Metronome(Option<Metro>),
     /// Quickly mutes every ringing string.
     Damp,
     Volume(f32),
 }
 
+/// Settings of the sample-accurate metronome run by the audio engine.
+#[derive(Clone, Copy, PartialEq)]
+pub struct Metro {
+    pub bpm: f32,
+    pub beats: u32,
+    /// Clicks per beat (1 = quarter notes, 2 = eighths, 3 = triplets, 4 = sixteenths).
+    pub subdiv: u32,
+    pub accent: bool,
+}
+
+/// Metronome ticks played since it started; 0 while stopped.
+pub type Ticks = Arc<AtomicU64>;
+
 pub struct Synth {
     tx: Sender<Event>,
+    ticks: Ticks,
     _stream: cpal::Stream,
 }
 
@@ -32,6 +50,7 @@ impl Synth {
         let channels = config.channels() as usize;
         let (tx, rx) = channel();
         let mut engine = Engine::new(sr, rx);
+        let ticks = engine.ticks.clone();
         let stream = device
             .build_output_stream(
                 &config.into(),
@@ -41,7 +60,12 @@ impl Synth {
             )
             .ok()?;
         stream.play().ok()?;
-        Some(Synth { tx, _stream: stream })
+        Some(Synth { tx, ticks, _stream: stream })
+    }
+
+    /// Metronome ticks played since it started (0 while stopped).
+    pub fn metro_ticks(&self) -> u64 {
+        self.ticks.load(Ordering::Relaxed)
     }
 
     pub fn send(&self, e: Event) {
@@ -183,7 +207,14 @@ struct Scratch {
 struct Click {
     phase: f32,
     freq: f32,
+    gain: f32,
     t: u32,
+}
+
+struct MetroState {
+    set: Metro,
+    /// Samples until the next tick.
+    wait: f64,
 }
 
 struct Engine {
@@ -195,11 +226,13 @@ struct Engine {
     volume: f32,
     rng: Rng,
     lp: f32,
+    metro: Option<MetroState>,
+    ticks: Ticks,
 }
 
 impl Engine {
     fn new(sr: f32, rx: Receiver<Event>) -> Engine {
-        Engine { sr, rx, voices: Vec::new(), clicks: Vec::new(), scratches: Vec::new(), volume: 0.8, rng: Rng(0x9E37_79B9), lp: 0.0 }
+        Engine { sr, rx, voices: Vec::new(), clicks: Vec::new(), scratches: Vec::new(), volume: 0.8, rng: Rng(0x9E37_79B9), lp: 0.0, metro: None, ticks: Ticks::default() }
     }
 
     fn handle(&mut self, e: Event) {
@@ -217,10 +250,58 @@ impl Engine {
                 prev: 0.0,
                 lp: 0.0,
             }),
-            Event::Click { accent } => self.clicks.push(Click { phase: 0.0, freq: if accent { 1760.0 } else { 1320.0 }, t: 0 }),
+            Event::Click { accent } => self.click(if accent { 1760.0 } else { 1320.0 }, 1.0),
+            Event::Metronome(None) => {
+                self.metro = None;
+                self.ticks.store(0, Ordering::Relaxed);
+            }
+            Event::Metronome(Some(set)) => match &mut self.metro {
+                // Retuned while running: keep the beat, never wait longer than the new interval.
+                Some(m) => {
+                    m.set = set;
+                    m.wait = m.wait.min(self.sr as f64 * Self::interval(&set));
+                }
+                None => {
+                    self.ticks.store(0, Ordering::Relaxed);
+                    self.metro = Some(MetroState { set, wait: 0.0 });
+                }
+            },
             Event::Damp => self.voices.iter_mut().for_each(Voice::release),
             Event::Volume(v) => self.volume = v,
         }
+    }
+
+    fn click(&mut self, freq: f32, gain: f32) {
+        self.clicks.push(Click { phase: 0.0, freq, gain, t: 0 });
+    }
+
+    /// Seconds between two metronome ticks.
+    fn interval(m: &Metro) -> f64 {
+        60.0 / (m.bpm.max(1.0) as f64 * m.subdiv.max(1) as f64)
+    }
+
+    /// Metronome tick due on this sample, if any.
+    fn metro_step(&mut self) {
+        let Some(m) = &mut self.metro else { return };
+        let due = m.wait <= 0.0;
+        if due {
+            m.wait += self.sr as f64 * Self::interval(&m.set);
+        }
+        m.wait -= 1.0;
+        if !due {
+            return;
+        }
+        let set = m.set;
+        let n = self.ticks.fetch_add(1, Ordering::Relaxed);
+        let sub = set.subdiv.max(1) as u64;
+        let (freq, gain) = if n % sub != 0 {
+            (990.0, 0.45)
+        } else if set.accent && (n / sub) % set.beats.max(1) as u64 == 0 {
+            (1760.0, 1.0)
+        } else {
+            (1320.0, 0.8)
+        };
+        self.click(freq, gain);
     }
 
     fn fill(&mut self, data: &mut [f32], channels: usize) {
@@ -229,6 +310,7 @@ impl Engine {
         }
         let click_len = (self.sr * 0.03) as u32;
         for frame in data.chunks_mut(channels) {
+            self.metro_step();
             let mut s: f32 = self.voices.iter_mut().map(Voice::next).sum();
             // A string only rings once: a note starting stops the previous one on that string.
             for i in 0..self.voices.len() {
@@ -257,7 +339,7 @@ impl Engine {
             }
             for c in self.clicks.iter_mut().filter(|c| c.t < click_len) {
                 let env = 1.0 - c.t as f32 / click_len as f32;
-                s += (c.phase * std::f32::consts::TAU).sin() * env * env * 0.25;
+                s += (c.phase * std::f32::consts::TAU).sin() * env * env * 0.25 * c.gain;
                 c.phase = (c.phase + c.freq / self.sr).fract();
                 c.t += 1;
             }
@@ -291,5 +373,21 @@ mod tests {
         // Still ringing after one second, but quieter than the attack.
         let tail = buf[40_000..].iter().fold(0.0f32, |a, x| a.max(x.abs()));
         assert!(tail > 0.005 && tail < peak, "tail {tail}");
+    }
+
+    #[test]
+    fn metronome_ticks_on_time() {
+        let (tx, rx) = channel();
+        let mut e = Engine::new(48_000.0, rx);
+        tx.send(Event::Metronome(Some(Metro { bpm: 120.0, beats: 4, subdiv: 2, accent: true }))).unwrap();
+        // Two seconds at 120 BPM in eighths: 8 ticks, the first on sample 0.
+        let mut buf = vec![0.0f32; 96_000];
+        e.fill(&mut buf, 1);
+        assert_eq!(e.ticks.load(Ordering::Relaxed), 8);
+        // The first tick sounds immediately.
+        assert!(buf[..200].iter().any(|x| x.abs() > 0.05));
+        tx.send(Event::Metronome(None)).unwrap();
+        e.fill(&mut buf[..10], 1);
+        assert_eq!(e.ticks.load(Ordering::Relaxed), 0);
     }
 }
