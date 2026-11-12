@@ -1,0 +1,108 @@
+# Un tag vX.Y.Z (scripts/release.sh) construit Till pour macOS, Linux et
+# Windows, puis publie une release GitHub avec les archives. Elle n'est créée
+# qu'une fois toutes les compilations réussies : Ronnie ne voit jamais une
+# release à laquelle manque l'archive de son système.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        # Ubuntu la plus ancienne gérée : le binaire marche aussi avec des glibc plus vieilles.
+        os: [macos-latest, ubuntu-22.04, windows-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+
+      - name: Le tag correspond à la version de Cargo.toml
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "Tag $GITHUB_REF_NAME mais Cargo.toml dit $version" >&2
+            exit 1
+          fi
+
+      - name: Dépendances de compilation Linux
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libxkbcommon-dev libwayland-dev libx11-dev libxcursor-dev \
+            libxrandr-dev libxi-dev libgl1-mesa-dev libgtk-3-dev libasound2-dev libwebkit2gtk-4.1-dev \
+            libsoup-3.0-dev libjavascriptcoregtk-4.1-dev libxdo-dev
+
+      # Le certificat auto-signé de Ronnie (secrets MACOS_SIGN_P12, en base64,
+      # et son mot de passe) : la même signature d'une version à l'autre garde
+      # l'accès au micro. Sans les secrets, package.sh signe ad hoc.
+      - name: Certificat de signature macOS
+        if: runner.os == 'macOS'
+        env:
+          P12: ${{ secrets.MACOS_SIGN_P12 }}
+          P12_PASSWORD: ${{ secrets.MACOS_SIGN_P12_PASSWORD }}
+        run: |
+          if [ -z "$P12" ]; then
+            echo "::warning::Pas de secret MACOS_SIGN_P12 : signature ad hoc"
+            exit 0
+          fi
+          keychain="$RUNNER_TEMP/sign.keychain-db"
+          pass=$(openssl rand -hex 16)
+          echo "$P12" | base64 --decode >"$RUNNER_TEMP/sign.p12"
+          security create-keychain -p "$pass" "$keychain"
+          security set-keychain-settings "$keychain"
+          security unlock-keychain -p "$pass" "$keychain"
+          security import "$RUNNER_TEMP/sign.p12" -k "$keychain" -P "$P12_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -k "$pass" "$keychain" >/dev/null
+          security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '"')
+          rm "$RUNNER_TEMP/sign.p12"
+          echo "SIGN_IDENTITY=Ronnie Code Signing" >>"$GITHUB_ENV"
+
+      - name: Paquet
+        run: scripts/package.sh
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: till-${{ matrix.os }}
+          path: dist/*
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          path: src
+
+      # Les notes de version : la section de cette version dans CHANGELOG.md.
+      - name: Notes de version
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          awk -v v="$version" '
+            /^## \[/ { if (found) exit; if (index($0, "[" v "]")) { found = 1; next } }
+            found { print }
+          ' src/CHANGELOG.md > notes.md
+          if [ -s notes.md ]; then echo "notes=--notes-file notes.md" >> "$GITHUB_ENV"; else echo "notes=--generate-notes" >> "$GITHUB_ENV"; fi
+          cat notes.md
+
+      - name: Création de la release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" --title "Till ${GITHUB_REF_NAME#v}" $notes

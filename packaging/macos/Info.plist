@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleName</key>
+    <string>Till</string>
+    <key>CFBundleDisplayName</key>
+    <string>Till</string>
+    <key>CFBundleIdentifier</key>
+    <string>com.jellfedora.till</string>
+    <key>CFBundleExecutable</key>
+    <string>till</string>
+    <key>CFBundleIconFile</key>
+    <string>Till</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleShortVersionString</key>
+    <string>{{VERSION}}</string>
+    <key>CFBundleVersion</key>
+    <string>{{VERSION}}</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>11.0</string>
+    <key>LSApplicationCategoryType</key>
+    <string>public.app-category.music</string>
+    <key>NSHighResolutionCapable</key>
+    <true/>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>Till écoute ta guitare pour l'accordeur et pour vérifier ce que tu joues.</string>
+</dict>
+</plist>

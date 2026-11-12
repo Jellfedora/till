@@ -102,8 +102,9 @@ pub fn icon_data(size: u32) -> eframe::egui::IconData {
 mod tests {
     #[test]
     fn dump_icon() {
+        // TILL_ICON_DUMP=assets/icon/icon.png cargo test dump_icon: the PNG of the release packages.
         if let Ok(path) = std::env::var("TILL_ICON_DUMP") {
-            std::fs::write(path, super::rgba(256)).unwrap();
+            image::save_buffer(path, &super::rgba(1024), 1024, 1024, image::ExtendedColorType::Rgba8).unwrap();
         }
     }
 }
