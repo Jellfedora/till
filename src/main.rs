@@ -1,4 +1,5 @@
 mod chords;
+#[cfg_attr(not(target_os = "macos"), path = "clip_other.rs")]
 mod clip;
 mod diagram;
 mod icon;
