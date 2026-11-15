@@ -5,8 +5,15 @@ use eframe::egui::{self, Color32, CornerRadius, FontId, Stroke, TextStyle, Theme
 pub const ACCENT: Color32 = Color32::from_rgb(234, 142, 52);
 const ON_ACCENT: Color32 = Color32::from_rgb(38, 22, 6);
 
-/// macOS fonts used as fallbacks for symbols the built-in fonts lack (arrows, check marks…).
-const FALLBACK_FONTS: &[&str] = &["/System/Library/Fonts/Apple Symbols.ttf"];
+/// System fonts used as fallbacks for symbols the built-in fonts lack (arrows,
+/// check marks, ♭ ♯…): the first found on macOS, Windows and Linux.
+const FALLBACK_FONTS: &[&str] = &[
+    "/System/Library/Fonts/Apple Symbols.ttf",
+    "C:\\Windows\\Fonts\\seguisym.ttf",
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+    "/usr/share/fonts/dejavu-sans-fonts/DejaVuSans.ttf",
+    "/usr/share/fonts/TTF/DejaVuSans.ttf",
+];
 
 fn install_fallback_fonts(ctx: &egui::Context) {
     let mut fonts = egui::FontDefinitions::default();
